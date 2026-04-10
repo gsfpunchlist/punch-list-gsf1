@@ -14,7 +14,7 @@
      CONFIGURACION — EDITAR ANTES DE DESPLEGAR
      ═══════════════════════════════════════════════════════════ -->
 <script>
-  const APPS_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbzh3uRy6u70yjIMf9fDJgGun2vieVOj5-etR09qaoaF1TnXefS5bBbVvmDCxsOzML0u/exec';
+  const APPS_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbzd3bPSZNLR0c0hYV0zUO8tdnqqt91zPtI6mXpn8nR-0ElCB1Uqef5tTRw0nFDjJRTN/exec';
 </script>
 
 <style>
@@ -241,7 +241,8 @@ select{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/
       <!-- KKS -->
       <div class="field">
         <label>KKS / Tag del equipo</label>
-        <input type="text" id="f-kks" placeholder="Ej: 10MAB10AP001" autocapitalize="characters">
+        <input type="text" id="f-kks" placeholder="Ej: 10MAB10AP001" autocapitalize="characters" oninput="lookupKKS(this.value)">
+        <div id="kks-desc" style="font-size:12px;color:#0F6E56;font-weight:500;min-height:16px;padding:2px 0;display:none"></div>
       </div>
 
       <!-- Ubicación -->
@@ -266,6 +267,14 @@ select{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/
           <button class="area-btn" id="btn-mecanico"     onclick="selectArea('Mecánico')">
             <span class="area-icon">⚙️</span>Mecánico
           </button>
+        </div>
+      </div>
+
+      <!-- Categoría (se asigna desde el panel admin) -->
+      <div class="field">
+        <label>Categoría <span style="font-size:10px;color:#aaa;font-weight:400">(asignada por admin)</span></label>
+        <div style="font-size:13px;color:#888;padding:8px 12px;border:1.5px solid #eee;border-radius:10px;background:#fafafa">
+          Se asigna después del registro desde el panel de administrador
         </div>
       </div>
 
@@ -385,6 +394,30 @@ select{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/
         <div>
           <div class="modal-label">Ubicación</div>
           <div class="modal-value" id="m-ubi"></div>
+        </div>
+      </div>
+      <div id="m-kks-sys-section" style="display:none">
+        <div class="modal-label">Sistema KKS</div>
+        <div class="modal-value" id="m-kks-sys" style="font-family:monospace;font-size:12px;color:#0F6E56"></div>
+      </div>
+      <div id="m-cat-section">
+        <div class="modal-label">Categoría</div>
+        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+          <div class="modal-value" id="m-cat" style="color:#888;font-style:italic">Sin asignar</div>
+          <div id="m-cat-admin" style="display:none">
+            <select id="m-cat-select" style="font-size:12px;padding:4px 8px;border:1px solid #ddd;border-radius:6px;background:#fff">
+              <option value="">— Seleccionar categoría —</option>
+              <option>Defecto de instalación</option>
+              <option>Documentación pendiente</option>
+              <option>NCR (Non Conformance Report)</option>
+              <option>Punch de comisionamiento</option>
+              <option>Observación de seguridad</option>
+              <option>Pendiente de materiales</option>
+              <option>Prueba de aceptación</option>
+              <option>Otros</option>
+            </select>
+            <button onclick="saveCategoryFromModal()" style="font-size:11px;padding:4px 10px;background:#0F6E56;color:#fff;border:none;border-radius:6px;cursor:pointer;margin-left:4px">Guardar</button>
+          </div>
         </div>
       </div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
@@ -628,8 +661,19 @@ async function submitItem() {
   if (!selectedArea){ showToast('Selecciona un área / disciplina', 'error'); return; }
   if (!desc)        { showToast('Ingresa una descripción del punto', 'error'); return; }
 
+  // KKS lookup
+  const kksVal = kks.trim().toUpperCase();
+  const kksMatch = kksVal.match(/[A-Z]{2,3}/);
+  let kksSys = '', kksSysDesc = '';
+  if (kksMatch) {
+    const c3 = kksMatch[0].substring(0,3);
+    const c2 = kksMatch[0].substring(0,2);
+    kksSys = KKS_SYSTEMS_LOCAL[c3] ? c3 : (KKS_SYSTEMS_LOCAL[c2] ? c2 : c3);
+    kksSysDesc = KKS_SYSTEMS_LOCAL[kksSys] || '';
+  }
+
   const item = {
-    id, fecha, kks, ubicacion: ubi, area: selectedArea, desc,
+    id, fecha, kks, kksSys, kksSysDesc, ubicacion: ubi, area: selectedArea, desc,
     reportedBy: currentUser,
     photo: currentPhotos[0] || '',  // primera foto (base64)
     status: 'Abierto',
@@ -788,6 +832,22 @@ async function openDetail(id) {
   document.getElementById('m-ubi').textContent   = item.ubicacion || '—';
   document.getElementById('m-reporter').textContent = item.reportedBy;
 
+  // KKS system
+  const kksSec = document.getElementById('m-kks-sys-section');
+  if (item.kksSys || item.kksSysDesc) {
+    document.getElementById('m-kks-sys').textContent = 
+      (item.kksSys ? item.kksSys + ' — ' : '') + (item.kksSysDesc || '');
+    kksSec.style.display = '';
+  } else { kksSec.style.display = 'none'; }
+
+  // Category
+  const catEl = document.getElementById('m-cat');
+  catEl.textContent = item.categoria || 'Sin asignar';
+  catEl.style.fontStyle = item.categoria ? 'normal' : 'italic';
+  catEl.style.color = item.categoria ? '#1a1a1a' : '#aaa';
+  const catSelect = document.getElementById('m-cat-select');
+  if (catSelect) catSelect.value = item.categoria || '';
+
   document.getElementById('m-area-tag').outerHTML =
     `<span id="m-area-tag" class="area-tag tag-${aCls}">${item.area}</span>`;
 
@@ -823,9 +883,11 @@ async function openDetail(id) {
     guestClose.style.display   = 'none';
     document.getElementById('m-close-btn').style.display   = sClosed ? 'none' : '';
     document.getElementById('m-reopen-btn').style.display  = sClosed ? '' : 'none';
+    document.getElementById('m-cat-admin').style.display   = '';
   } else {
     adminActions.style.display = 'none';
     guestClose.style.display   = '';
+    document.getElementById('m-cat-admin').style.display   = 'none';
   }
 
   document.getElementById('detail-modal').classList.add('open');
@@ -1054,6 +1116,81 @@ if ('serviceWorker' in navigator) {
   navigator.serviceWorker.register('./sw.js')
     .then(() => console.log('SW registered'))
     .catch(err => console.warn('SW error:', err));
+}
+
+// ══════════════════════════════════════════════════════════════
+//  KKS LOOKUP
+// ══════════════════════════════════════════════════════════════
+const KKS_SYSTEMS_LOCAL = {
+  'MAB':'IP Turbine','MBA':'Gas Turbine & Compressor Rotor','MAA':'HP Turbine','MAC':'LP Turbine',
+  'MAV':'Steam Turbine Lube Oil','MBV':'Gas Turbine Lube Oil','MBP':'Fuel Supply System (Gas)',
+  'MBL':'Intake Air System','MBR':'Exhaust Gas System','MBY':'GT Control & Protection',
+  'MAY':'ST Electric Control & Protection','MKA':'Generator','MKG':'H2 Cooling System',
+  'MKY':'Generator Control & Protection','MKD':'Generator Bearings',
+  'LA':'Feedwater System','LAA':'Feedwater Tank / Deaerator','LAC':'Feedwater Pump',
+  'LB':'Steam System','LBA':'Main Steam Piping','LBB':'Hot Reheat Steam','LBC':'Cold Reheat Steam',
+  'LC':'Condensate System','LCA':'Main Condensate Piping','LCB':'Main Condensate Pump',
+  'PA':'Main Cooling Water','PAC':'Cooling Water Pump','PAD':'Recirculating Cooling',
+  'PG':'Closed Cooling Water','PGB':'Closed Cooling Water (CC)','PGD':'Closed Cooling Water (GT)',
+  'QE':'Service Compressed Air','QEA':'Service Air Generation','QEB':'Service Air Distribution',
+  'QF':'Instrument Air','QFA':'Compressed Air Generation','QFB':'Instrument Air Distribution',
+  'QJ':'Central Gas Supply','QJA':'H2 Storage & Distribution','QJN':'N2 Storage & Distribution',
+  'EK':'Gaseous Fuel Supply','EKA':'Receiving Equipment','EKD':'Reducing Station','EKG':'Fuel Piping',
+  'BA':'Power Transmission','BAA':'Generator Busbars','BAT':'Generator Transformers',
+  'BB':'MV Distribution — Normal','BBA':'MV Switchgear','BF':'LV Main Distribution',
+  'BJ':'LV Subdistribution — Normal','BJA':'MCC',
+  'BL':'LV Subdistribution — General','BM':'LV Distribution — Emergency',
+  'BN':'LV Subdistribution — Emergency','BR':'UPS Distribution','BT':'Battery Systems',
+  'AE':'110-150 kV Systems','AET':'Main Transformers','AEA':'Breakers',
+  'AN':'<1 kV Systems','ANE':'LV Switchgear 480/208V','ANK':'DC Switchgear 125/110V',
+  'AP':'Control Consoles','APA':'SCADA Panel','AY':'Communication Equipment','AYE':'Fire Alarm System',
+  'CJ':'Unit Coordination (DCS)','CJP':'I&C — Gas Turbine','CJJ':'I&C — Steam Turbine',
+  'CR':'Process Control System','CRK':'Automation System (HA)','CRS':'Communication (Plant Bus)',
+  'SG':'Fire Protection','SGA':'Fire Water System','SA':'HVAC','SAA':'Buildings Ventilation',
+  'HN':'Exhaust Gas System','HNE':'Smokestack (Chimney)',
+  'GA':'Raw Water Supply','GC':'Demineralization System',
+  'UA':'Switchyard Structure','UB':'Switchgear Building','UM':'Steam Turbine Building',
+  'US':'Area / Building'
+};
+
+function lookupKKS(val) {
+  const desc = document.getElementById('kks-desc');
+  if (!val || val.length < 2) { desc.style.display='none'; return; }
+  const cleaned = val.trim().toUpperCase();
+  const m = cleaned.match(/[A-Z]{2,3}/);
+  if (!m) { desc.style.display='none'; return; }
+  const c3 = m[0].substring(0,3);
+  const c2 = m[0].substring(0,2);
+  const sys = KKS_SYSTEMS_LOCAL[c3] ? c3 : (KKS_SYSTEMS_LOCAL[c2] ? c2 : null);
+  if (sys) {
+    desc.textContent = '⚙ ' + sys + ' — ' + KKS_SYSTEMS_LOCAL[sys];
+    desc.style.display = '';
+  } else { desc.style.display='none'; }
+}
+
+// ══════════════════════════════════════════════════════════════
+//  SAVE CATEGORY (admin modal)
+// ══════════════════════════════════════════════════════════════
+async function saveCategoryFromModal() {
+  if (!currentDetail || !isAdmin) return;
+  const cat = document.getElementById('m-cat-select').value;
+  if (!cat) { showToast('Selecciona una categoría', 'error'); return; }
+  try {
+    const res = await postToSheet({
+      action: 'updateCategory', id: currentDetail.id,
+      password: adminPwd, categoria: cat
+    });
+    if (res.success) {
+      // Update local DB
+      const item = await getItemFromDB(currentDetail.id);
+      if (item) { item.categoria = cat; await dbPut(STORE_ITEMS, item); }
+      document.getElementById('m-cat').textContent = cat;
+      document.getElementById('m-cat').style.fontStyle = 'normal';
+      document.getElementById('m-cat').style.color = '#1a1a1a';
+      showToast('✓ Categoría guardada', 'success');
+      renderList();
+    } else { showToast(res.error || 'Error', 'error'); }
+  } catch(e) { showToast('Sin conexión', 'error'); }
 }
 
 // ══════════════════════════════════════════════════════════════
