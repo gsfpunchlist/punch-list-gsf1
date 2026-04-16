@@ -14,7 +14,7 @@
      CONFIGURACION — EDITAR ANTES DE DESPLEGAR
      ═══════════════════════════════════════════════════════════ -->
 <script>
-  const APPS_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbwdFjUc1CX62KcKZd7hlQP9He72akjJHtAmUpPncvHJX-EE37hIRO4bvTj_6XHP-faK/exec';
+  const APPS_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbwo7ptGxPU_V8PN47RSTagkX6927I1W8sPmhyfPDJuZPHV08PBQFC4S5KmKDuGb996m/exec';
   // ← Pega aquí la URL del webhook de Make para notificaciones al inspector
   const NOTIFICATION_WEBHOOK = 'https://hook.us2.make.com/rc5u4ac6p4cndpvmufl6qtbewg58oius';
 </script>
@@ -609,6 +609,11 @@ function changeName() {
 //  TABS
 // ══════════════════════════════════════════════════════════════
 function switchTab(tab) {
+  // Always require name + email before using the app
+  if (!currentUser || !currentEmail) {
+    document.getElementById('name-modal').style.display = 'flex';
+    return;
+  }
   ['nuevo','lista','admin'].forEach(t => {
     document.getElementById('content-'+t).style.display = t === tab ? '' : 'none';
     document.getElementById('tab-'+t).classList.toggle('active', t === tab);
@@ -671,7 +676,11 @@ function handlePhotos(e) {
 }
 
 async function submitItem() {
-  if (!currentUser) { showToast('Configura tu nombre primero', 'error'); return; }
+  if (!currentUser || !currentEmail) {
+    document.getElementById('name-modal').style.display = 'flex';
+    showToast('Completa tu nombre y correo primero', 'error');
+    return;
+  }
   const kks  = document.getElementById('f-kks').value.trim();
   const ubi  = document.getElementById('f-ubi').value.trim();
   const desc = document.getElementById('f-desc').value.trim();
@@ -679,6 +688,7 @@ async function submitItem() {
   const id   = document.getElementById('f-id').value;
 
   if (!ubi)         { showToast('Ingresa la ubicación', 'error'); return; }
+  if (!kks)         { showToast('Ingresa el KKS / Tag del equipo', 'error'); return; }
   if (!selectedArea){ showToast('Selecciona un área / disciplina', 'error'); return; }
   if (!desc)        { showToast('Ingresa una descripción del punto', 'error'); return; }
 
