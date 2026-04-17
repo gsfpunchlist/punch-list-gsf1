@@ -115,7 +115,8 @@ function doPost(e) {
       case 'verifyAdmin':      return verifyAdmin(data);
       case 'updateCategory':   return updateCategory(data);
       case 'getConfig':        return getConfig();
-      case 'refreshDashboard': return refreshDashboardAction(data);
+      case 'refreshDashboard':   return refreshDashboardAction(data);
+      case 'protectSheet':       return protectSheetAction(data);
       case 'getReport':         return getReport(data);
       case 'backupPhotos':      return backupPhotos(data);
       default:                  return jsonResponse({ error: 'Acción desconocida' });
@@ -134,26 +135,42 @@ function doGet() {
 // ════════════════════════════════════════════════════════════
 function submitItem(data) {
   const lock = LockService.getScriptLock();
-  lock.waitLock(10000);
+  lock.waitLock(15000);
   try {
-    const sheet    = getSheet();
-    const colMap   = getColMap(sheet);
-    const lastRow  = sheet.getLastRow();
-    const id       = 'PL-' + String(lastRow).padStart(3, '0');
+    const sheet   = getSheet();
+    const colMap  = getColMap(sheet);
+
+    // Atomic ID counter using PropertiesService — prevents duplicates with concurrent users
+    const props   = PropertiesService.getScriptProperties();
+    const current = parseInt(props.getProperty('PL_COUNTER') || '0', 10);
+    const next    = current + 1;
+    props.setProperty('PL_COUNTER', String(next));
+    const id      = 'PL-' + String(next).padStart(3, '0');
     const kksCode  = extractKKS(data.kks);
     const kksDesc  = kksCode ? (KKS[kksCode] || kksCode) : '';
     let   photoUrl = '';
 
-    // Upload photo to Drive
+    // Upload photo to Drive — organizado por Anno/Mes/Dia
     if (data.photo && data.photo.length > 100) {
       try {
-        const folder   = DriveApp.getFolderById(CONFIG.FOLDER_ID);
+        var rootFolder  = DriveApp.getFolderById(CONFIG.FOLDER_ID);
+        var photoDate   = data.fecha ? new Date(data.fecha + 'T12:00:00') : new Date();
+        var year        = photoDate.getFullYear().toString();
+        var monthNames  = ['01-Enero','02-Febrero','03-Marzo','04-Abril','05-Mayo','06-Junio','07-Julio','08-Agosto','09-Septiembre','10-Octubre','11-Noviembre','12-Diciembre'];
+        var month       = monthNames[photoDate.getMonth()];
+        var day         = String(photoDate.getDate()).padStart(2, '0');
+        var yIter = rootFolder.getFoldersByName(year);
+        var yearFolder = yIter.hasNext() ? yIter.next() : rootFolder.createFolder(year);
+        var mIter = yearFolder.getFoldersByName(month);
+        var monthFolder = mIter.hasNext() ? mIter.next() : yearFolder.createFolder(month);
+        var dIter = monthFolder.getFoldersByName(day);
+        var dayFolder = dIter.hasNext() ? dIter.next() : monthFolder.createFolder(day);
         const b64      = data.photo.split(',')[1];
         const mime     = data.photo.split(';')[0].split(':')[1] || 'image/jpeg';
         const ext      = mime.includes('png') ? 'png' : 'jpg';
         const name     = id + '_' + data.fecha + '_' + sanitize(data.reportedBy) + '.' + ext;
         const blob     = Utilities.newBlob(Utilities.base64Decode(b64), mime, name);
-        const file     = folder.createFile(blob);
+        const file     = dayFolder.createFile(blob);
         file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
         photoUrl       = file.getUrl();
       } catch (pe) { Logger.log('Photo error: ' + pe.message); }
@@ -288,6 +305,61 @@ function getConfig() {
 }
 
 // ════════════════════════════════════════════════════════════
+//  PROTECT SHEET ACTION
+// ════════════════════════════════════════════════════════════
+// ── Run this function ONCE manually from the Apps Script editor ──
+function protectAndAnnotateSheet() {
+  var ss    = SpreadsheetApp.openById(CONFIG.SHEET_ID);
+  var sheet = ss.getSheetByName(CONFIG.SHEET_NAME);
+  if (!sheet) { Logger.log('Sheet not found'); return; }
+
+  var headers   = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
+  var colMap    = {};
+  headers.forEach(function(h, i) { if (h) colMap[String(h).trim()] = i; });
+
+  var statusCol = colMap['Estatus'];
+  var closerCol = colMap['Cerrado por'];
+  var dateCol   = colMap['Fecha cierre'];
+
+  // Add warning note on header
+  if (statusCol !== undefined) {
+    sheet.getRange(1, statusCol + 1).setNote(
+      '⚠ IMPORTANTE: El cierre de items debe realizarse UNICAMENTE desde el Panel Admin de la app. ' +
+      'Editar esta columna directamente NO registrara la fecha de cierre ni el responsable. ' +
+      'App: https://gsfpunchlist.github.io/punch-list-gsf1/'
+    );
+  }
+
+  // Remove existing protections
+  var existing = sheet.getProtections(SpreadsheetApp.ProtectionType.RANGE);
+  existing.forEach(function(p) { p.remove(); });
+
+  // Protect columns with warning
+  var lastRow = Math.max(sheet.getLastRow(), 2);
+  [statusCol, closerCol, dateCol].forEach(function(col) {
+    if (col !== undefined) {
+      var range = sheet.getRange(2, col + 1, lastRow - 1, 1);
+      var prot  = range.protect();
+      prot.setDescription('Solo editable via Apps Script — Panel Admin de la app');
+      prot.setWarningOnly(true);
+    }
+  });
+
+  Logger.log('Sheet protected and annotated successfully. Columns protected: Estatus, Cerrado por, Fecha cierre.');
+}
+
+function protectSheetAction(data) {
+  if (data.password !== CONFIG.ADMIN_PASSWORD)
+    return jsonResponse({ error: 'No autorizado' });
+  try {
+    protectAndAnnotateSheet();
+    return jsonResponse({ success: true, message: 'Sheet protegido correctamente.' });
+  } catch(e) {
+    return jsonResponse({ success: false, error: e.message });
+  }
+}
+
+// ════════════════════════════════════════════════════════════
 //  REFRESH DASHBOARD (callable from Make.com via HTTP POST)
 // ════════════════════════════════════════════════════════════
 function refreshDashboardAction(data) {
@@ -377,71 +449,99 @@ function getReport(data) {
   var dashUrl = 'https://docs.google.com/spreadsheets/d/' + CONFIG.SHEET_ID + '/edit#gid=427250963';
   var appUrl  = 'https://gsfpunchlist.github.io/punch-list-gsf1/';
 
+  // Colors matching the Dashboard
+  var C_GREEN  = '#0F6E56';
+  var C_DKHEAD = '#333333';
+  var C_RED_BG = '#FCEBEB';
+  var C_RED_FG = '#CC0000';
+  var C_GRN_BG = '#EAF3DE';
+  var C_GRN_FG = '#1A6E1A';
+  var C_GRAY   = '#F5F5F5';
+  var C_WHITE  = '#FFFFFF';
+
   var html =
-    '<table width="100%" cellpadding="0" cellspacing="0" style="font-family:Arial,sans-serif;max-width:580px;margin:0 auto">' +
+    '<div style="font-family:Arial,sans-serif;max-width:700px;margin:0 auto;border:1px solid #cccccc">' +
 
-    // Header
-    '<tr><td style="background-color:#0F6E56;padding:24px 28px;border-radius:6px 6px 0 0">' +
-    '<p style="margin:0;font-size:11px;color:#9FE1CB;font-weight:bold;letter-spacing:2px">REPORTE SEMANAL</p>' +
-    '<p style="margin:4px 0 2px;font-size:20px;font-weight:bold;color:#ffffff">Punch List GSF1 CCPP - TSK</p>' +
-    '<p style="margin:0;font-size:12px;color:#9FE1CB">' + fecha + '</p>' +
-    '</td></tr>' +
+    // ─ TITLE BAR (matches Dashboard header)
+    '<table width="700" cellpadding="0" cellspacing="0" style="background-color:' + C_GREEN + ';border-collapse:collapse"><tr>' +
+    '<td style="padding:14px 18px;text-align:center">' +
+    '<div style="font-size:16px;font-weight:bold;color:#ffffff;letter-spacing:1px">PUNCH LIST DASHBOARD &mdash; GSF1 CCPP - TSK</div>' +
+    '</td></tr></table>' +
 
-    // Stats row
-    '<tr><td style="background-color:#f8f8f8;padding:20px 28px;border:1px solid #e5e5e5">' +
-    '<table width="100%" cellpadding="0" cellspacing="0"><tr>' +
-    '<td width="32%" style="background:#ffffff;border:2px solid #e5e5e5;border-radius:6px;padding:16px;text-align:center">' +
-    '<p style="margin:0;font-size:32px;font-weight:bold;color:#1a1a1a">' + total + '</p>' +
-    '<p style="margin:4px 0 0;font-size:10px;color:#888;font-weight:bold;letter-spacing:1px">TOTAL</p></td>' +
-    '<td width="4%"></td>' +
-    '<td width="32%" style="background:#FFF0F0;border:2px solid #FFAAAA;border-radius:6px;padding:16px;text-align:center">' +
-    '<p style="margin:0;font-size:32px;font-weight:bold;color:#CC0000">' + abiertos.length + '</p>' +
-    '<p style="margin:4px 0 0;font-size:10px;color:#CC0000;font-weight:bold;letter-spacing:1px">ABIERTOS</p></td>' +
-    '<td width="4%"></td>' +
-    '<td width="32%" style="background:#F0FFF0;border:2px solid #88CC88;border-radius:6px;padding:16px;text-align:center">' +
-    '<p style="margin:0;font-size:32px;font-weight:bold;color:#006600">' + cerrados.length + '</p>' +
-    '<p style="margin:4px 0 0;font-size:10px;color:#006600;font-weight:bold;letter-spacing:1px">CERRADOS</p></td>' +
+    // ─ TIMESTAMP
+    '<table width="700" cellpadding="0" cellspacing="0" style="background-color:#f8f8f8;border-collapse:collapse"><tr>' +
+    '<td style="padding:5px 18px;text-align:right;font-size:11px;color:#888888">Actualizado: ' + fecha + '</td>' +
     '</tr></table>' +
-    '</td></tr>' +
 
-    // Area table
-    '<tr><td style="padding:20px 28px;border:1px solid #e5e5e5;border-top:none;background:#ffffff">' +
-    '<p style="margin:0 0 12px;font-size:12px;font-weight:bold;color:#0F6E56;text-transform:uppercase;letter-spacing:1px">Por Area / Disciplina</p>' +
-    '<table width="100%" cellpadding="6" cellspacing="0" style="border-collapse:collapse;font-size:13px">' +
-    '<tr style="background:#0F6E56;color:#ffffff">' +
-    '<td style="padding:8px 10px;font-weight:bold;font-size:11px">AREA</td>' +
-    '<td style="padding:8px 10px;font-weight:bold;font-size:11px;text-align:center">ABIERTOS</td>' +
-    '<td style="padding:8px 10px;font-weight:bold;font-size:11px;text-align:center">CERRADOS</td>' +
-    '<td style="padding:8px 10px;font-weight:bold;font-size:11px;text-align:center">TOTAL</td>' +
-    '<td style="padding:8px 10px;font-weight:bold;font-size:11px;text-align:center">% CIERRE</td>' +
+    // ─ SUMMARY CARDS (matches Dashboard cards)
+    '<table width="700" cellpadding="0" cellspacing="0" style="border-collapse:collapse;border-bottom:2px solid #cccccc"><tr>' +
+    '<td width="233" style="background-color:#f5f5f5;padding:14px;text-align:center;border-right:1px solid #cccccc">' +
+    '<div style="font-size:11px;font-weight:bold;color:#555555;letter-spacing:1px">TOTAL</div>' +
+    '<div style="font-size:36px;font-weight:bold;color:#1a1a1a;line-height:1.2">' + total + '</div></td>' +
+    '<td width="233" style="background-color:' + C_RED_BG + ';padding:14px;text-align:center;border-right:1px solid #ffaaaa">' +
+    '<div style="font-size:11px;font-weight:bold;color:' + C_RED_FG + ';letter-spacing:1px">ABIERTOS</div>' +
+    '<div style="font-size:36px;font-weight:bold;color:' + C_RED_FG + ';line-height:1.2">' + abiertos.length + '</div></td>' +
+    '<td width="234" style="background-color:' + C_GRN_BG + ';padding:14px;text-align:center">' +
+    '<div style="font-size:11px;font-weight:bold;color:' + C_GRN_FG + ';letter-spacing:1px">CERRADOS</div>' +
+    '<div style="font-size:36px;font-weight:bold;color:' + C_GRN_FG + ';line-height:1.2">' + cerrados.length + '</div></td>' +
+    '</tr></table>' +
+
+    // ─ KKS SECTION
+    '<table width="700" cellpadding="0" cellspacing="0" style="border-collapse:collapse;margin-top:0">' +
+    '<tr><td colspan="5" style="background-color:' + C_GREEN + ';padding:8px 12px;font-size:12px;font-weight:bold;color:#ffffff;letter-spacing:1px">POR SISTEMA KKS</td></tr>' +
+    '<tr style="background-color:' + C_DKHEAD + '">' +
+    '<td style="padding:7px 12px;font-size:11px;font-weight:bold;color:#ffffff;width:80px">C&oacute;digo</td>' +
+    '<td style="padding:7px 12px;font-size:11px;font-weight:bold;color:#ffffff">Sistema</td>' +
+    '<td style="padding:7px 12px;font-size:11px;font-weight:bold;color:#ffffff;text-align:right;width:80px">Abiertos</td>' +
+    '<td style="padding:7px 12px;font-size:11px;font-weight:bold;color:#ffffff;text-align:right;width:80px">Cerrados</td>' +
+    '<td style="padding:7px 12px;font-size:11px;font-weight:bold;color:#ffffff;text-align:right;width:60px">Total</td>' +
+    '</tr>' + kksRows +
+    '</table>' +
+
+    // ─ AREA SECTION
+    '<table width="700" cellpadding="0" cellspacing="0" style="border-collapse:collapse;margin-top:2px">' +
+    '<tr><td colspan="5" style="background-color:' + C_GREEN + ';padding:8px 12px;font-size:12px;font-weight:bold;color:#ffffff;letter-spacing:1px">POR &Aacute;REA / DISCIPLINA</td></tr>' +
+    '<tr style="background-color:' + C_DKHEAD + '">' +
+    '<td style="padding:7px 12px;font-size:11px;font-weight:bold;color:#ffffff">Area</td>' +
+    '<td style="padding:7px 12px;font-size:11px;font-weight:bold;color:#ffffff;text-align:right;width:80px">Abiertos</td>' +
+    '<td style="padding:7px 12px;font-size:11px;font-weight:bold;color:#ffffff;text-align:right;width:80px">Cerrados</td>' +
+    '<td style="padding:7px 12px;font-size:11px;font-weight:bold;color:#ffffff;text-align:right;width:60px">Total</td>' +
+    '<td style="padding:7px 12px;font-size:11px;font-weight:bold;color:#ffffff;text-align:right;width:80px">% Cierre</td>' +
     '</tr>' + areaRows +
     '</table>' +
 
-    // Items section
-    '<p style="margin:20px 0 12px;font-size:12px;font-weight:bold;color:#CC0000;text-transform:uppercase;letter-spacing:1px">Items Abiertos (' + abiertos.length + ')</p>' +
-    '<table width="100%" cellpadding="6" cellspacing="0" style="border-collapse:collapse;font-size:12px">' +
-    '<tr style="background:#7F1D1D;color:#ffffff">' +
-    '<td style="padding:8px 10px;font-weight:bold;font-size:11px">ID</td>' +
-    '<td style="padding:8px 10px;font-weight:bold;font-size:11px">FECHA</td>' +
-    '<td style="padding:8px 10px;font-weight:bold;font-size:11px">AREA</td>' +
-    '<td style="padding:8px 10px;font-weight:bold;font-size:11px">DESCRIPCION</td>' +
-    '<td style="padding:8px 10px;font-weight:bold;font-size:11px">INSPECTOR</td>' +
-    '</tr>' + itemRows +
+    // ─ CATEGORY SECTION
+    '<table width="700" cellpadding="0" cellspacing="0" style="border-collapse:collapse;margin-top:2px">' +
+    '<tr><td colspan="5" style="background-color:' + C_GREEN + ';padding:8px 12px;font-size:12px;font-weight:bold;color:#ffffff;letter-spacing:1px">POR CATEGOR&Iacute;A</td></tr>' +
+    '<tr style="background-color:' + C_DKHEAD + '">' +
+    '<td style="padding:7px 12px;font-size:11px;font-weight:bold;color:#ffffff">Categor&iacute;a</td>' +
+    '<td style="padding:7px 12px;font-size:11px;font-weight:bold;color:#ffffff;text-align:right;width:80px">Abiertos</td>' +
+    '<td style="padding:7px 12px;font-size:11px;font-weight:bold;color:#ffffff;text-align:right;width:80px">Cerrados</td>' +
+    '<td style="padding:7px 12px;font-size:11px;font-weight:bold;color:#ffffff;text-align:right;width:60px">Total</td>' +
+    '<td style="padding:7px 12px;font-size:11px;font-weight:bold;color:#ffffff;text-align:right;width:80px">% Cierre</td>' +
+    '</tr>' + catRows +
     '</table>' +
-    '</td></tr>' +
 
-    // CTA
-    '<tr><td style="padding:24px 28px;text-align:center;background:#f8f8f8;border:1px solid #e5e5e5;border-top:none">' +
-    '<a href="' + dashUrl + '" style="background-color:#0F6E56;color:#ffffff;text-decoration:none;padding:12px 30px;border-radius:5px;font-size:14px;font-weight:bold;display:inline-block;margin-right:12px">Ver Dashboard &rarr;</a>' +
-    '<a href="' + appUrl + '" style="background-color:#ffffff;color:#0F6E56;text-decoration:none;padding:11px 20px;border-radius:5px;font-size:14px;font-weight:bold;display:inline-block;border:2px solid #0F6E56">Abrir App</a>' +
-    '</td></tr>' +
+    // ─ INSPECTOR SECTION
+    '<table width="700" cellpadding="0" cellspacing="0" style="border-collapse:collapse;margin-top:2px">' +
+    '<tr><td colspan="4" style="background-color:' + C_GREEN + ';padding:8px 12px;font-size:12px;font-weight:bold;color:#ffffff;letter-spacing:1px">POR INSPECTOR / USUARIO</td></tr>' +
+    '<tr style="background-color:' + C_DKHEAD + '">' +
+    '<td style="padding:7px 12px;font-size:11px;font-weight:bold;color:#ffffff">Inspector</td>' +
+    '<td style="padding:7px 12px;font-size:11px;font-weight:bold;color:#ffffff;text-align:right;width:80px">Abiertos</td>' +
+    '<td style="padding:7px 12px;font-size:11px;font-weight:bold;color:#ffffff;text-align:right;width:80px">Cerrados</td>' +
+    '<td style="padding:7px 12px;font-size:11px;font-weight:bold;color:#ffffff;text-align:right;width:60px">Total</td>' +
+    '</tr>' + repRows +
+    '</table>' +
 
-    // Footer
-    '<tr><td style="padding:14px 28px;text-align:center;background:#eeeeee;border-radius:0 0 6px 6px">' +
-    '<p style="margin:0;font-size:11px;color:#888888">Punch List GSF1 CCPP &bull; TSK &bull; Reporte autom&aacute;tico cada viernes 4:00 PM</p>' +
+    // ─ CTA FOOTER
+    '<table width="700" cellpadding="0" cellspacing="0" style="border-collapse:collapse;background-color:#f5f5f5;border-top:2px solid #cccccc"><tr>' +
+    '<td style="padding:16px;text-align:center">' +
+    '<a href="' + dashUrl + '" style="background-color:' + C_GREEN + ';color:#ffffff;text-decoration:none;padding:10px 28px;font-size:13px;font-weight:bold;display:inline-block;margin-right:10px">Ver Dashboard &rarr;</a>' +
+    '<a href="' + appUrl + '" style="background-color:#ffffff;color:' + C_GREEN + ';text-decoration:none;padding:9px 20px;font-size:13px;font-weight:bold;display:inline-block;border:2px solid ' + C_GREEN + '">Abrir App</a>' +
     '</td></tr>' +
-
-    '</table>';
+    '<tr><td style="padding:8px;text-align:center;font-size:10px;color:#999999">Punch List GSF1 CCPP &bull; TSK &bull; Reporte autom&aacute;tico cada viernes 4:00 PM</td></tr>' +
+    '</table>' +
+    '</div>';
 
 
     return jsonResponse({
@@ -509,6 +609,15 @@ function backupPhotos(data) {
 //  MIGRATE & BACKFILL// ════════════════════════════════════════════════════════════
 //  MIGRATE & BACKFILL (run once manually from editor)
 // ════════════════════════════════════════════════════════════
+
+// ── SYNC COUNTER — ejecutar UNA VEZ después del deployment ──
+function syncCounter() {
+  var sheet = getSheet();
+  var count = Math.max(sheet.getLastRow() - 1, 0);
+  PropertiesService.getScriptProperties().setProperty('PL_COUNTER', String(count));
+  Logger.log('Contador sincronizado: ' + count + ' | Próximo ID: PL-' + String(count+1).padStart(3,'0'));
+}
+
 function migrateAndRefresh() {
   const sheet   = getSheet();          // ensures headers exist & adds missing cols
   const colMap  = getColMap(sheet);
