@@ -174,6 +174,28 @@ select{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/
 .kks-item-code{font-size:12px;font-weight:700;color:#0F6E56;font-family:monospace}
 .kks-item-desc{font-size:12px;color:#555;margin-top:2px}
 .kks-no-results{padding:12px;font-size:13px;color:#aaa;text-align:center}
+/* ── CLOSE MODAL ── */
+#close-modal{display:none;position:fixed;inset:0;z-index:200;background:rgba(0,0,0,0.7);align-items:center;justify-content:center;padding:16px}
+#close-modal.open{display:flex}
+.close-modal-box{background:#fff;border-radius:16px;padding:24px;width:100%;max-width:460px;max-height:90vh;overflow-y:auto}
+.close-modal-box h3{font-size:16px;font-weight:700;color:#1a1a1a;margin-bottom:4px}
+.close-modal-box .cm-id{font-size:12px;color:#888;margin-bottom:20px;font-family:monospace}
+.close-modal-box label{display:block;font-size:12px;font-weight:600;color:#555;letter-spacing:1px;text-transform:uppercase;margin-bottom:6px}
+.close-modal-box textarea{width:100%;border:1.5px solid #ddd;border-radius:10px;padding:12px;font-size:14px;resize:vertical;min-height:80px;font-family:inherit;outline:none;transition:border-color 0.2s}
+.close-modal-box textarea:focus{border-color:#0F6E56}
+.cm-photo-zone{border:2px dashed #ddd;border-radius:10px;padding:20px;text-align:center;cursor:pointer;margin-top:4px;transition:all 0.2s;position:relative}
+.cm-photo-zone:hover{border-color:#0F6E56;background:#f0faf6}
+.cm-photo-zone input{position:absolute;inset:0;opacity:0;cursor:pointer;width:100%;height:100%}
+.cm-photo-preview{width:100%;border-radius:8px;margin-top:10px;display:none;max-height:160px;object-fit:cover}
+.cm-photo-label{font-size:13px;color:#888;margin-top:6px}
+.cm-photo-label.has-photo{color:#0F6E56;font-weight:600}
+.cm-btns{display:flex;gap:12px;margin-top:20px}
+.cm-btns button{flex:1;padding:12px;border-radius:10px;font-size:14px;font-weight:600;cursor:pointer;border:none;transition:all 0.2s}
+.cm-cancel{background:#f0f0f0;color:#555}
+.cm-cancel:hover{background:#e0e0e0}
+.cm-confirm{background:#0F6E56;color:#fff}
+.cm-confirm:hover{background:#085041}
+.cm-confirm:disabled{background:#ccc;cursor:not-allowed}
 </style>
 </head>
 <body>
@@ -447,7 +469,7 @@ select{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/
       </a>
       <!-- Admin actions (visible solo si es admin) -->
       <div id="m-admin-actions" style="display:none;margin-top:8px;display:flex;flex-direction:column;gap:8px">
-        <button class="close-item-btn" id="m-close-btn" onclick="closeCurrentItem()">✓ Marcar como CERRADO</button>
+        <button class="close-item-btn" id="m-close-btn" onclick="openCloseModalFromDetail()">✓ Marcar como CERRADO</button>
         <button class="reopen-item-btn" id="m-reopen-btn" onclick="reopenCurrentItem()" style="display:none">↺ Reabrir ítem</button>
         <button class="close-modal-btn" onclick="closeDetailModal()">Cerrar</button>
       </div>
@@ -936,37 +958,41 @@ function closeDetailModal(e) {
   document.getElementById('detail-modal').classList.remove('open');
 }
 
-async function closeCurrentItem() {
+function openCloseModalFromDetail() {
   if (!currentDetail || !isAdmin) return;
-  const btn = document.getElementById('m-close-btn');
-  btn.disabled = true;
-  btn.textContent = 'Cerrando...';
+  // Close detail modal first
+  document.getElementById('detail-modal').classList.remove('open');
+  // Open close modal
+  openCloseModal(currentDetail.id, currentDetail.desc ? currentDetail.desc.substring(0,50) : currentDetail.id);
+}
+
+async function closeCurrentItem(id, comment, photoB64) {
   try {
     const res = await postToSheet({
-      action: 'close', id: currentDetail.id,
-      password: adminPwd, closedBy: currentUser || 'Admin'
+      action: 'close', id: id,
+      password: adminPwd, closedBy: currentUser || 'Admin',
+      closeComment: comment || '',
+      closePhoto: photoB64 || ''
     });
     if (res.success) {
-      // Update local DB
-      const item = await getItemFromDB(currentDetail.id);
+      const item = await getItemFromDB(id);
       if (item) {
         item.status = 'Cerrado';
         item.closedBy = currentUser || 'Admin';
         item.closedDate = new Date().toLocaleDateString('es-DO');
+        item.closeComment = comment || '';
         await dbPut(STORE_ITEMS, item);
       }
-      showToast('✓ Ítem cerrado correctamente', 'success');
-      document.getElementById('detail-modal').classList.remove('open');
+      showToast('✓ Ítem ' + id + ' cerrado correctamente', 'success');
       renderList();
-      renderAdminStats();
+      if (typeof renderAdminStats === 'function') renderAdminStats();
+      renderAdminList();
     } else {
       showToast(res.error || 'Error al cerrar', 'error');
     }
   } catch (e) {
     showToast('Sin conexión — no se pudo cerrar', 'error');
   }
-  btn.disabled = false;
-  btn.textContent = '✓ Marcar como CERRADO';
 }
 
 async function reopenCurrentItem() {
@@ -1281,6 +1307,83 @@ openDB().then(() => {
     if (isOnline) processSyncQueue();
   }, 30000);
 });
+</script>
+<!-- ── CLOSE ITEM MODAL ─────────────────────────────── -->
+<div id="close-modal">
+  <div class="close-modal-box">
+    <h3>Cerrar punto de Punch List</h3>
+    <div class="cm-id" id="cm-item-label"></div>
+
+    <div style="margin-bottom:16px">
+      <label>Comentario de cierre</label>
+      <textarea id="cm-comment" placeholder="Describir la acción tomada, solución aplicada o motivo del cierre..."></textarea>
+    </div>
+
+    <div style="margin-bottom:4px">
+      <label>Foto de cierre (opcional)</label>
+      <div class="cm-photo-zone" id="cm-photo-zone">
+        <input type="file" accept="image/*" capture="environment" id="cm-photo-input" onchange="previewClosePhoto(this)">
+        <div style="font-size:24px">📸</div>
+        <div class="cm-photo-label" id="cm-photo-label">Tomar foto o seleccionar de galería</div>
+        <img id="cm-photo-preview" class="cm-photo-preview">
+      </div>
+    </div>
+
+    <div class="cm-btns">
+      <button class="cm-cancel" onclick="closeCloseModal()">Cancelar</button>
+      <button class="cm-confirm" id="cm-confirm-btn" onclick="confirmCloseItem()">✓ Confirmar Cierre</button>
+    </div>
+  </div>
+</div>
+
+<script>
+var _closeItemId = null;
+var _closePhotoB64 = null;
+
+function openCloseModal(id, desc) {
+  _closeItemId = id;
+  _closePhotoB64 = null;
+  document.getElementById('cm-item-label').textContent = id + (desc ? ' — ' + desc : '');
+  document.getElementById('cm-comment').value = '';
+  document.getElementById('cm-photo-preview').style.display = 'none';
+  document.getElementById('cm-photo-label').textContent = 'Tomar foto o seleccionar de galería';
+  document.getElementById('cm-photo-label').className = 'cm-photo-label';
+  document.getElementById('cm-photo-input').value = '';
+  document.getElementById('close-modal').classList.add('open');
+}
+
+function closeCloseModal() {
+  document.getElementById('close-modal').classList.remove('open');
+  _closeItemId = null;
+  _closePhotoB64 = null;
+}
+
+function previewClosePhoto(input) {
+  if (!input.files || !input.files[0]) return;
+  const file = input.files[0];
+  const reader = new FileReader();
+  reader.onload = function(e) {
+    _closePhotoB64 = e.target.result;
+    const preview = document.getElementById('cm-photo-preview');
+    preview.src = _closePhotoB64;
+    preview.style.display = 'block';
+    document.getElementById('cm-photo-label').textContent = '✓ ' + file.name;
+    document.getElementById('cm-photo-label').className = 'cm-photo-label has-photo';
+  };
+  reader.readAsDataURL(file);
+}
+
+async function confirmCloseItem() {
+  if (!_closeItemId) return;
+  const btn     = document.getElementById('cm-confirm-btn');
+  const comment = document.getElementById('cm-comment').value.trim();
+  btn.disabled  = true;
+  btn.textContent = 'Cerrando...';
+  await closeCurrentItem(_closeItemId, comment, _closePhotoB64);
+  btn.disabled = false;
+  btn.textContent = '✓ Confirmar Cierre';
+  closeCloseModal();
+}
 </script>
 </body>
 </html>
