@@ -14,7 +14,7 @@
      CONFIGURACION — EDITAR ANTES DE DESPLEGAR
      ═══════════════════════════════════════════════════════════ -->
 <script>
-  const APPS_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbz4eb2H_-1LMSH5Q79-ispE_PLz-tSP2o3KqhAmdo5jjnuzObtG0WaApM4l5GEroeXR/exec';
+  const APPS_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbytelwt8JQlvOuB-gbmkzJip4Kopp-50Urnu7uinnrpWgEc3OxMnPcq7TVLiJ-wNzM_/exec';
   // ← Pega aquí la URL del webhook de Make para notificaciones al inspector
   const NOTIFICATION_WEBHOOK = 'https://hook.us2.make.com/rc5u4ac6p4cndpvmufl6qtbewg58oius';
 </script>
@@ -1363,12 +1363,24 @@ function previewClosePhoto(input) {
   const file = input.files[0];
   const reader = new FileReader();
   reader.onload = function(e) {
-    _closePhotoB64 = e.target.result;
-    const preview = document.getElementById('cm-photo-preview');
-    preview.src = _closePhotoB64;
-    preview.style.display = 'block';
-    document.getElementById('cm-photo-label').textContent = '✓ ' + file.name;
-    document.getElementById('cm-photo-label').className = 'cm-photo-label has-photo';
+    // Compress image before storing
+    const img = new Image();
+    img.onload = function() {
+      const canvas = document.createElement('canvas');
+      const maxW = 1200, maxH = 1200;
+      let w = img.width, h = img.height;
+      if (w > maxW) { h = Math.round(h * maxW / w); w = maxW; }
+      if (h > maxH) { w = Math.round(w * maxH / h); h = maxH; }
+      canvas.width = w; canvas.height = h;
+      canvas.getContext('2d').drawImage(img, 0, 0, w, h);
+      _closePhotoB64 = canvas.toDataURL('image/jpeg', 0.7);
+      const preview = document.getElementById('cm-photo-preview');
+      preview.src = _closePhotoB64;
+      preview.style.display = 'block';
+      document.getElementById('cm-photo-label').textContent = '✓ ' + file.name;
+      document.getElementById('cm-photo-label').className = 'cm-photo-label has-photo';
+    };
+    img.src = e.target.result;
   };
   reader.readAsDataURL(file);
 }
