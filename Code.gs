@@ -1056,13 +1056,11 @@ function buildRow(colMap, data) {
 // Extract 2-3 letter KKS system code from a tag string
 function extractKKS(tag) {
   if (!tag) return '';
-  const m = tag.trim().toUpperCase().match(/[A-Z]{2,3}/);
+  const m = tag.trim().toUpperCase().match(/[A-Z]{3,}/);
   if (!m) return '';
   const c3 = m[0].substring(0, 3);
-  const c2 = m[0].substring(0, 2);
   if (KKS[c3]) return c3;
-  if (KKS[c2]) return c2;
-  return c3; // return even if unknown, for display
+  return '';
 }
 
 function sanitize(str) {
