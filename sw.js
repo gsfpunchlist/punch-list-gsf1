@@ -1,6 +1,6 @@
 // Punch List GSF1 — Service Worker
 // Versión del cache — incrementar al actualizar la app
-const CACHE_NAME = 'punchlist-gsf1-v14';
+const CACHE_NAME = 'punchlist-gsf1-v15';
 const ASSETS = [
   './',
   './index.html',
